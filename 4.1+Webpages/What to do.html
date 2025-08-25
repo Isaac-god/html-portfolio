@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🐯The Animal Detector</title>
+    <style>
+    *{
+    background-color: greenyellow;
+    }
+    *{
+        text-align: center;
+    }
+    div{
+        background-color: silver;
+        margin: 5%;
+        height: 300px;
+        padding-top: 30px;
+        border-radius: 2%;
+    }
+    button{
+    cursor: pointer;
+    }    
+    </style>
+</head>
+<body>
+<h1>Use any one you want for different situations</h1>
+<div id="imagefile">
+<input type="file" id="file" accept="images">
+<button id="button1"style="background-color: silver; border-radius: 10%;">submit</button>
+</div>
+<label>web server:</label>
+<input type="text" id="text" placeholder="Type the animal or insect">
+<button id="button2"style="background-color: silver; border-radius: 10%;">submit</button>
+<script>
+     document.getElementById(`button2`).onclick = function goToNextPage(){
+    window.location.href = "app.html";
+		 }
+</script>
+</body>
+</html>

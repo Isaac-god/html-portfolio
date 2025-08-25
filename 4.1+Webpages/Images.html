@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Animal Lookup — Isaac's App</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; margin: 20px; background:#f7f8fb; color:#111; }
+    .card { background:white; border-radius:12px; padding:18px; box-shadow:0 6px 18px rgba(20,20,30,0.06); max-width:1000px; margin:auto; }
+    h1 { margin:0 0 8px 0; font-size:20px; }
+    .controls { display:flex; gap:8px; margin-bottom:12px; }
+    input[type="search"] { flex:1; padding:10px 12px; border-radius:8px; border:1px solid #ddd; font-size:15px; }
+    button { padding:10px 14px; border-radius:8px; border:0; background:#2563eb; color:white; cursor:pointer; font-weight:600; }
+    .grid { display:grid; grid-template-columns: 1fr 320px; gap:16px; margin-top:12px; }
+    .summary { line-height:1.5; }
+    .meta { font-size:14px; color:#444; margin-top:8px; }
+    .images { display:grid; grid-template-columns: repeat(auto-fill, minmax(140px,1fr)); gap:8px; margin-top:12px; }
+    .images img { width:100%; height:110px; object-fit:cover; border-radius:8px; box-shadow:0 4px 10px rgba(10,10,20,0.05); }
+    .section-title { font-weight:700; margin-top:10px; font-size:15px; }
+    pre { background:#0f1724; color:#e6eef8; padding:8px; border-radius:8px; overflow:auto; }
+    .hint { color:#666; font-size:13px; margin-top:6px; }
+    .small { font-size:13px; color:#666; }
+    @media (max-width:900px){ .grid{ grid-template-columns: 1fr; } .card{ padding:14px; } }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Animal / Insect Lookup</h1>
+    <div class="hint">Type an animal or insect name (common or scientific). Uses Wikipedia & Wikimedia Commons.</div>
+
+    <div style="margin-top:12px" class="controls">
+      <input id="query" type="search" placeholder="e.g. african elephant, monarch butterfly, honey bee" value="">
+      <button id="searchBtn">Search</button>
+    </div>
+
+    <div id="status" class="small"></div>
+
+    <div class="grid">
+      <div>
+        <div id="resultArea"></div>
+      </div>
+
+      <div>
+        <div id="sideCard" class="card" style="padding:12px;">
+          <div id="thumbWrap"></div>
+          <div id="quickFacts" class="meta"></div>
+          <div id="imagesWrap"></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:14px;" class="small">
+      Want better ID (photo → species)? I can help you add a trained ML model or image-upload identification next.
+    </div>
+  </div>
+
+<script>
+  const searchBtn = document.getElementById('searchBtn');
+  const queryInput = document.getElementById('query');
+  const resultArea = document.getElementById('resultArea');
+  const status = document.getElementById('status');
+  const thumbWrap = document.getElementById('thumbWrap');
+  const imagesWrap = document.getElementById('imagesWrap');
+  const quickFacts = document.getElementById('quickFacts');
+
+  searchBtn.addEventListener('click', () => lookup(queryInput.value.trim()));
+  queryInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') lookup(queryInput.value.trim()); });
+
+  async function lookup(term) {
+    if (!term) { showMessage('Please enter an animal or insect name.'); return; }
+    clearAll();
+    showMessage(`Searching for “${term}”...`);
+
+    try {
+      // 1) Fetch Wikipedia summary (REST API)
+      const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(term)}`;
+      const summaryResp = await fetch(summaryUrl, { headers: { 'Accept': 'application/json' } });
+      if (!summaryResp.ok) {
+        // try a search fallback
+        const fallbackTitle = await wikiSearchTitle(term);
+        if (!fallbackTitle) { showMessage('No matching Wikipedia page found. Try a different name.'); return; }
+        return await lookup(fallbackTitle);
+      }
+      const summary = await summaryResp.json();
+      if (summary.type === 'disambiguation') {
+        showMessage(`"${term}" is ambiguous. Showing first suggestion...`);
+        // try suggestion from summary.extract or titles? summary may include disambiguation list in 'titles' or 'content_urls'
+        if (summary.titles && summary.titles.normalized) {
+          return await lookup(summary.titles.normalized);
+        }
+        // otherwise use the search fallback
+        const fallbackTitle = await wikiSearchTitle(term);
+        if (fallbackTitle) return await lookup(fallbackTitle);
+      }
+
+      renderSummary(summary);
+      // 2) Extract habitat & abilities from the summary text
+      const habitat = extractSentences(summary.extract || '', ['habitat','found in','native','distribution','range','lives','occurs','found','endemic']);
+      const abilities = extractSentences(summary.extract || '', ['feed','diet','hunts','nocturnal','diurnal','can','capable','fly','swim','burrow','venom','poison','camouflage','mimic','migrat','social','solitary','predator','prey','forage','hunt']);
+      renderExtracts(habitat, abilities);
+
+      // 3) Display thumbnail (if available)
+      renderThumbnail(summary);
+
+      // 4) Fetch additional images from Wikimedia Commons (search for "term" in files)
+      const commonsImgs = await fetchCommonsImages(term, 8);
+      renderImages(commonsImgs);
+
+      showMessage(`Results for "${summary.title}". Source: Wikipedia & Wikimedia Commons.`);
+      // quick facts
+      quickFacts.innerHTML = `<strong>${summary.title}</strong><div class="small">${summary.description || ''}</div>`;
+    } catch (err) {
+      console.error(err);
+      showMessage('An error occurred. Check console for details.');
+    }
+  }
+
+  function clearAll() {
+    resultArea.innerHTML = '';
+    thumbWrap.innerHTML = '';
+    imagesWrap.innerHTML = '';
+    quickFacts.innerHTML = '';
+    status.textContent = '';
+  }
+
+  function showMessage(text) {
+    status.textContent = text;
+  }
+
+  function renderSummary(summary) {
+    const html = `
+      <div class="summary">
+        <div style="display:flex;gap:12px;align-items:flex-start">
+          <div style="flex:1">
+            <div style="font-weight:800;font-size:18px">${escapeHtml(summary.title || '')}</div>
+            <div style="color:#445;margin-top:6px">${escapeHtml(summary.description || '')}</div>
+            <p style="margin-top:10px">${escapeHtml(summary.extract || 'No summary available.')}</p>
+            <div class="small">Read more on Wikipedia: <a href="${summary.content_urls?.desktop?.page || '#'}" target="_blank" rel="noopener">${summary.content_urls?.desktop?.page || 'link'}</a></div>
+          </div>
+        </div>
+      </div>
+    `;
+    resultArea.innerHTML = html;
+  }
+
+  function renderThumbnail(summary) {
+    thumbWrap.innerHTML = '';
+    if (summary.thumbnail && summary.thumbnail.source) {
+      const img = document.createElement('img');
+      img.src = summary.thumbnail.source;
+      img.style.width='100%';
+      img.style.borderRadius='8px';
+      thumbWrap.appendChild(img);
+    } else if (summary.originalimage && summary.originalimage.source) {
+      const img = document.createElement('img');
+      img.src = summary.originalimage.source;
+      img.style.width='100%';
+      img.style.borderRadius='8px';
+      thumbWrap.appendChild(img);
+    } else {
+      thumbWrap.innerHTML = '<div class="small">No thumbnail available.</div>';
+    }
+  }
+
+  function renderExtracts(habitatArr, abilitiesArr) {
+    const habitatHtml = habitatArr.length ? `<div class="section-title">Likely habitat / distribution</div><div>${habitatArr.map(s => `<div>${escapeHtml(s)}</div>`).join('')}</div>` : '';
+    const abilitiesHtml = abilitiesArr.length ? `<div class="section-title">Likely abilities & behavior</div><div>${abilitiesArr.map(s => `<div>${escapeHtml(s)}</div>`).join('')}</div>` : '';
+    resultArea.insertAdjacentHTML('beforeend', habitatHtml + abilitiesHtml);
+  }
+
+  function renderImages(imgUrls) {
+    imagesWrap.innerHTML = '<div class="section-title">Images</div>';
+    const grid = document.createElement('div');
+    grid.className = 'images';
+    if (!imgUrls || imgUrls.length === 0) {
+      grid.innerHTML = '<div class="small">No images found on Wikimedia Commons.</div>';
+    } else {
+      imgUrls.forEach(u => {
+        const i = document.createElement('img');
+        i.src = u;
+        i.loading = 'lazy';
+        grid.appendChild(i);
+      });
+    }
+    imagesWrap.appendChild(grid);
+  }
+
+  function extractSentences(text, keywords) {
+    if (!text) return [];
+    // split text into sentences (naive)
+    const sentences = text.split(/(?<=[.!?])\s+/);
+    const found = [];
+    const lowKeywords = keywords.map(k => k.toLowerCase());
+    for (let s of sentences) {
+      const low = s.toLowerCase();
+      if (lowKeywords.some(k => low.includes(k))) {
+        // avoid duplicates
+        if (!found.includes(s)) found.push(s);
+      }
+    }
+    // limit to a few sentences
+    return found.slice(0, 4);
+  }
+
+  async function wikiSearchTitle(term) {
+    // fallback: use the MediaWiki search API to find the top page title
+    const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(term)}&format=json&origin=*`;
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (j?.query?.search && j.query.search.length) {
+      return j.query.search[0].title;
+    }
+    return null;
+  }
+
+  async function fetchCommonsImages(term, limit=6) {
+    try {
+      // 1) search for files on Commons matching the term (namespace 6 = File)
+      const searchUrl = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(term)}&srnamespace=6&srlimit=${limit}&format=json&origin=*`;
+      const sResp = await fetch(searchUrl);
+      if (!sResp.ok) return [];
+      const sJson = await sResp.json();
+      const results = sJson?.query?.search || [];
+      if (results.length === 0) return [];
+
+      // build a 'titles' param with the file titles (they already contain "File:...")
+      const titles = results.map(r => r.title).join('|');
+
+      // 2) get imageinfo (url) for the found files
+      const infoUrl = `https://commons.wikimedia.org/w/api.php?action=query&titles=${encodeURIComponent(titles)}&prop=imageinfo&iiprop=url|mime|extmetadata&format=json&origin=*`;
+      const iResp = await fetch(infoUrl);
+      if (!iResp.ok) return [];
+      const iJson = await iResp.json();
+      const pages = iJson?.query?.pages || {};
+      const urls = [];
+      for (const pid in pages) {
+        const p = pages[pid];
+        if (p.imageinfo && p.imageinfo[0] && p.imageinfo[0].url) {
+          urls.push(p.imageinfo[0].url);
+        }
+      }
+      return urls;
+    } catch (e) {
+      console.warn('Commons image fetch failed', e);
+      return [];
+    }
+  }
+
+  // small helper to escape HTML
+  function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  }
+
+  // Pre-fill an example to help testing
+  queryInput.value = 'monarch butterfly';
+  // optional: auto-search once loaded:
+  // lookup(queryInput.value);
+
+</script>
+</body>
